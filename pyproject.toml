@@ -1,0 +1,15 @@
+[project]
+name = "rele-project"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "gymnasium>=1.2.1",
+    "sb3_contrib>=2.0.0a1",
+    "stable_baselines3>=2.0.0a1",
+    "pvlib",
+    "scikit-learn",
+    "cvxpy",
+    "ecos>=2.0.14",
+]
