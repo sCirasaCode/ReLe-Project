@@ -18,7 +18,7 @@ class CustomRewardWrapper(gym.Wrapper):
     Wrappt BEAR und ersetzt Reward:
     r = -β * ||action||^2 - (1-β) * ||TempDeviation||^2
     """
-    def __init__(self, env, beta=0.7, comfort_band=0.5, setpoint=22.0):
+    def __init__(self, env, beta=0.5, comfort_band=0.5, setpoint=22.0):
         super().__init__(env)
         self.beta = beta
         self.comfort_band = comfort_band
@@ -47,12 +47,12 @@ class CustomRewardWrapper(gym.Wrapper):
 
 
 # ============================================================
-# PPO Training & Evaluation
+# SAC Training & Evaluation
 # ============================================================
-def train_ppo_agent(building='Hospital', climate='Hot_Humid', location='Denver', 
-                    timesteps=30_000, beta=0.7, save_path="models"):
+def train_sac_agent(building='Hospital', climate='Hot_Humid', location='Denver', 
+                    timesteps=10_000, beta=0.5, save_path="models"):
     """
-    Trainiert einen PPO-Agent für Gebäudesteuerung
+    Trainiert einen SAC-Agent für Gebäudesteuerung
     
     Args:
         building: Gebäudetyp (z.B. 'Hospital')
@@ -63,12 +63,12 @@ def train_ppo_agent(building='Hospital', climate='Hot_Humid', location='Denver',
         save_path: Ordner zum Speichern des Modells
     
     Returns:
-        Trainiertes PPO-Modell
+        Trainiertes SAC-Modell
     """
     os.makedirs(save_path, exist_ok=True)
     
     print("="*60)
-    print("🤖 PPO TRAINING")
+    print("🤖 SAC TRAINING")
     print("="*60)
     print(f"Gebäude: {building}")
     print(f"Klima: {climate}, Standort: {location}")
@@ -86,26 +86,29 @@ def train_ppo_agent(building='Hospital', climate='Hot_Humid', location='Denver',
     # Vectorized Environment
     vec_env = make_vec_env(make_env, n_envs=1)
     
-    # PPO Agent
-    model = PPO(
+    # SAC Agent mit optimierten Hyperparametern
+    model = SAC(
         "MlpPolicy", 
         vec_env, 
         verbose=1,
         learning_rate=3e-4,
-        n_steps=2048,
-        batch_size=64,
-        n_epochs=10,
+        buffer_size=100_000,
+        learning_starts=1000,
+        batch_size=256,
+        tau=0.005,
         gamma=0.99,
-        gae_lambda=0.95,
-        clip_range=0.2,
-        ent_coef=0.01
+        train_freq=1,
+        gradient_steps=1,
+        ent_coef='auto',  # Automatische Entropie-Anpassung
+        target_update_interval=1,
+        target_entropy='auto'
     )
     
-    print("🚀 Starte Training...")
+    print("🚀 Starte SAC Training...")
     model.learn(total_timesteps=timesteps)
     
     # Modell speichern
-    model_path = os.path.join(save_path, f"ppo_{building}_{location}.zip")
+    model_path = os.path.join(save_path, f"sac_{building}_{location}.zip")
     model.save(model_path)
     print(f"\n✅ Training abgeschlossen!")
     print(f"💾 Modell gespeichert: {model_path}\n")
@@ -113,13 +116,13 @@ def train_ppo_agent(building='Hospital', climate='Hot_Humid', location='Denver',
     return model
 
 
-def evaluate_ppo_agent(model, building='Hospital', climate='Hot_Humid', 
-                       location='Denver', hours=24, beta=0.7):
+def evaluate_sac_agent(model, building='Hospital', climate='Hot_Humid', 
+                       location='Denver', hours=24, beta=0.5):
     """
-    Evaluiert einen trainierten PPO-Agent
+    Evaluiert einen trainierten SAC-Agent
     
     Args:
-        model: Trainiertes PPO-Modell
+        model: Trainiertes SAC-Modell
         building, climate, location: Umgebungsparameter
         hours: Simulationsdauer in Stunden
         beta: Reward-Gewichtung
@@ -127,7 +130,7 @@ def evaluate_ppo_agent(model, building='Hospital', climate='Hot_Humid',
     Returns:
         states, actions, rewards (numpy arrays)
     """
-    print("🔬 Evaluiere PPO Agent...")
+    print("🔬 Evaluiere SAC Agent...")
     
     # Environment erstellen
     params = ParameterGenerator(building, climate, location)
@@ -148,13 +151,13 @@ def evaluate_ppo_agent(model, building='Hospital', climate='Hot_Humid',
         if terminated or truncated:
             obs, _ = env.reset()
     
-    print(f"✅ PPO Evaluation abgeschlossen (Total Reward: {np.sum(rewards):.2f})\n")
+    print(f"✅ SAC Evaluation abgeschlossen (Total Reward: {np.sum(rewards):.2f})\n")
     
     return np.array(states), np.array(actions), np.array(rewards)
 
 
 # ============================================================
-# Visualisierung & Statistiken (Original-Funktionen)
+# Visualisierung & Statistiken
 # ============================================================
 def plot_temperature_profiles(states, zone_names, hours=24, agent_name="Agent", save_path="results"):
     """ Visualisiert Temperaturprofile für Schlüsselzonen über einen bestimmten Zeitraum. """
@@ -177,7 +180,7 @@ def plot_temperature_profiles(states, zone_names, hours=24, agent_name="Agent", 
     
     # Komfortband einzeichnen
     ax.axhline(22, color='black', linestyle='--', linewidth=1.5, label='Setpoint 22°C')
-    ax.axhline(22.5, color='red', linestyle=':', alpha=0.5)
+    ax.axhline(22.5, color='red', linestyle=':', alpha=0.5, label='±0.5°C Band')
     ax.axhline(21.5, color='red', linestyle=':', alpha=0.5)
     
     ax.set_xlabel('Stunden')
@@ -230,9 +233,19 @@ def calculate_statistics(states, actions, agent_name="Agent"):
     print(f"\n{'='*60}")
     print(f"📊 STATISTIKEN ({agent_name})")
     print(f"{'='*60}")
-    print("Temperaturstatistiken (Mittelwert ± Standardabweichung):")
-    for i, (mean, std) in enumerate(zip(temp_mean, temp_std)):
-        print(f"Zone {i:2d}: {mean:.2f}°C ± {std:.2f}°C")
+    
+    # Nur kritische Zonen anzeigen
+    critical_zones = {
+        'BASEMENT': 0,
+        'LOBBY_RECORDS_FLR_1': 7,
+        'OR1_FLR_2': 10,
+        'ICU_FLR_2': 17,
+        'PATROOM_MULTI10_FLR_3': 21
+    }
+    
+    print("Temperaturstatistiken (kritische Zonen):")
+    for name, idx in critical_zones.items():
+        print(f"{name:30s}: {temp_mean[idx]:.2f}°C ± {temp_std[idx]:.2f}°C")
     
     print(f"\nEnergieverbrauch (Mittelwert ± Standardabweichung): {energy_mean:.2f} kWh ± {energy_std:.2f} kWh")
     print(f"{'='*60}\n")
@@ -240,7 +253,7 @@ def calculate_statistics(states, actions, agent_name="Agent"):
 
 def compare_agents(results_dict, save_path="results"):
     """
-    Vergleicht mehrere Agenten (MPC, PPO, etc.)
+    Vergleicht mehrere Agenten (MPC, SAC, etc.)
     
     Args:
         results_dict: Dict mit Format {"Agent_Name": (states, actions, rewards)}
@@ -249,7 +262,7 @@ def compare_agents(results_dict, save_path="results"):
     
     fig, axes = plt.subplots(1, 2, figsize=(15, 5))
     
-    colors = {"MPC": "green", "PPO": "blue", "Random": "red"}
+    colors = {"MPC": "green", "SAC": "blue", "PPO": "orange", "Random": "red"}
     
     # 1. Temperaturvergleich (Zone 10 = OR1)
     ax1 = axes[0]
@@ -275,7 +288,7 @@ def compare_agents(results_dict, save_path="results"):
     
     ax2.set_xlabel('Stunden')
     ax2.set_ylabel('Kumulative Rewards')
-    ax2.set_title('Kostenvergleich (niedriger = besser)')
+    ax2.set_title('Kostenvergleich (höher = besser)')
     ax2.legend()
     ax2.grid(True, alpha=0.3)
     
@@ -287,29 +300,29 @@ def compare_agents(results_dict, save_path="results"):
 
 
 # ============================================================
-# Main mit PPO + MPC
+# Main mit SAC + MPC
 # ============================================================
 def main():
     num_hours = 24
     save_path = "results"
+    beta = 0.5  # 50/50 Balance zwischen Energie und Komfort
     
-    # ========== PPO Training ==========
-    ppo_model = train_ppo_agent(
+    # ========== SAC Training ==========
+    sac_model = train_sac_agent(
         building='Hospital',
         climate='Hot_Humid',
         location='Denver',
-        timesteps=100_000,  # Für schnelles Testen, erhöhe auf 100k+
-        beta=0.7
+        timesteps=10_000,
     )
     
-    # ========== PPO Evaluation ==========
-    states_ppo, actions_ppo, rewards_ppo = evaluate_ppo_agent(
-        ppo_model,
+    # ========== SAC Evaluation ==========
+    states_sac, actions_sac, rewards_sac = evaluate_sac_agent(
+        sac_model,
         building='Hospital',
         climate='Hot_Humid',
         location='Denver',
         hours=num_hours,
-        beta=0.7
+        beta=beta
     )
     
     # ========== MPC Evaluation ==========
@@ -338,9 +351,9 @@ def main():
     print("📈 Erstelle Visualisierungen...")
     
     # Einzelne Plots
-    plot_temperature_profiles(states_ppo, None, agent_name="PPO", save_path=save_path)
-    plot_energy_consumption(actions_ppo, agent_name="PPO", save_path=save_path)
-    calculate_statistics(states_ppo, actions_ppo, agent_name="PPO")
+    plot_temperature_profiles(states_sac, None, agent_name="SAC", save_path=save_path)
+    plot_energy_consumption(actions_sac, agent_name="SAC", save_path=save_path)
+    calculate_statistics(states_sac, actions_sac, agent_name="SAC")
     
     plot_temperature_profiles(states_mpc, None, agent_name="MPC", save_path=save_path)
     plot_energy_consumption(actions_mpc, agent_name="MPC", save_path=save_path)
@@ -348,7 +361,7 @@ def main():
     
     # Vergleich
     results = {
-        "PPO": (states_ppo, actions_ppo, rewards_ppo),
+        "SAC": (states_sac, actions_sac, rewards_sac),
         "MPC": (states_mpc, actions_mpc, rewards_mpc)
     }
     compare_agents(results, save_path=save_path)
