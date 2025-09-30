@@ -5,6 +5,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from collections import deque
 from stable_baselines3 import PPO, SAC
+from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 from stable_baselines3.common.env_util import make_vec_env
 import gymnasium as gym
 import os
@@ -40,11 +41,17 @@ class CustomRewardWrapper(gym.Wrapper):
 
         # Custom Reward
         energy_cost = np.linalg.norm(action) ** 2
-        comfort_cost = avg_deviation ** 2
+        comfort_cost = (avg_deviation) ** 3
         new_reward = -(self.beta * energy_cost + (1 - self.beta) * comfort_cost)
 
         return obs, new_reward, terminated, truncated, info
 
+# Global make_env (nur 1x definieren!)
+def make_env(building='Hospital', climate='Hot_Humid', location='Denver', beta=0.5):
+    params = ParameterGenerator(building, climate, location)
+    env = BuildingEnvReal(params)
+    env = CustomRewardWrapper(env, beta=beta)
+    return env
 
 # ============================================================
 # SAC Training & Evaluation
@@ -76,20 +83,14 @@ def train_sac_agent(building='Hospital', climate='Hot_Humid', location='Denver',
     print(f"Beta (Energie/Komfort): {beta}")
     print("="*60 + "\n")
     
-    # Environment erstellen
-    def make_env():
-        params = ParameterGenerator(building, climate, location)
-        env = BuildingEnvReal(params)
-        env = CustomRewardWrapper(env, beta=beta)
-        return env
-    
-    # Vectorized Environment
-    vec_env = make_vec_env(make_env, n_envs=1)
-    
+    # Vectorized + Normalize
+    env = DummyVecEnv([lambda: make_env(building, climate, location, beta)])
+    vec_env_normalize = VecNormalize(env, norm_obs=True, norm_reward=True, clip_obs=10.)
+
     # SAC Agent mit optimierten Hyperparametern
     model = SAC(
         "MlpPolicy", 
-        vec_env, 
+        vec_env_normalize, 
         verbose=1,
         learning_rate=3e-4,
         buffer_size=100_000,
@@ -110,6 +111,7 @@ def train_sac_agent(building='Hospital', climate='Hot_Humid', location='Denver',
     # Modell speichern
     model_path = os.path.join(save_path, f"sac_{building}_{location}.zip")
     model.save(model_path)
+    vec_env_normalize.save("models/sac_hospital_env.pkl")
     print(f"\n✅ Training abgeschlossen!")
     print(f"💾 Modell gespeichert: {model_path}\n")
     
@@ -131,25 +133,34 @@ def evaluate_sac_agent(model, building='Hospital', climate='Hot_Humid',
         states, actions, rewards (numpy arrays)
     """
     print("🔬 Evaluiere SAC Agent...")
+
+    # Neues Env für Evaluation  
+    eval_env = DummyVecEnv([lambda: make_env(building, climate, location, beta)])
+
+    # Lade Normalisierungs-Statistik  
+    eval_env = VecNormalize.load("models/sac_hospital_env.pkl", eval_env)
+
+    eval_env.training = False  
+    eval_env.norm_reward = False
     
     # Environment erstellen
     params = ParameterGenerator(building, climate, location)
-    env = BuildingEnvReal(params)
-    env = CustomRewardWrapper(env, beta=beta)
-    
-    obs, _ = env.reset()
+    eval_env = BuildingEnvReal(params)
+    eval_env = CustomRewardWrapper(eval_env, beta=beta)
+
+    obs, _ = eval_env.reset()
     states, actions, rewards = [], [], []
     
     for t in range(hours):
         action, _ = model.predict(obs, deterministic=True)
-        obs, reward, terminated, truncated, _ = env.step(action)
+        obs, reward, terminated, truncated, _ = eval_env.step(action)
         
         states.append(obs.copy())
         actions.append(action.copy())
         rewards.append(reward)
         
         if terminated or truncated:
-            obs, _ = env.reset()
+            obs, _ = eval_env.reset()
     
     print(f"✅ SAC Evaluation abgeschlossen (Total Reward: {np.sum(rewards):.2f})\n")
     
