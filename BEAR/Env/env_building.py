@@ -11,6 +11,7 @@ import numpy as np
 from numpy import linalg as LA
 from scipy.linalg import expm
 from sklearn import linear_model
+from typing import List
 
 
 class BuildingEnvReal(gym.Env):
@@ -371,6 +372,11 @@ class BuildingEnvReal(gym.Env):
             - self.OCCU_COEF[7] * avg_temp**2 * Meta**2
         )
             
+    def get_zone_names(self) -> List[str]:
+        """Returns the names of the zones in the building."""
+        zone_names = [f'Zone_{i+1}' for i in range(self.roomnum)]
+        return zone_names
+
     def train(self, states: np.ndarray, actions: np.ndarray) -> None:
         """Trains the linear regression model using the given states and actions.
         The model is trained to predict the next state based on the current state and action.
